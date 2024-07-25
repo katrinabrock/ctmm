@@ -229,22 +229,10 @@ Langevin <- function(t,CTMM,DIM=1)
   # default stationary process
   if(is.null(dynamics) || dynamics==FALSE || dynamics=="stationary")
   {
-    nl <- length(dtl)
-    Greenl <- array(0,c(nl,K*DIM,K*DIM))
-    Sigmal <- array(0,c(nl,K*DIM,K*DIM))
+    LANGEVIN <- langevin(dt=dtl,CTMM=CTMM,DIM=DIM)
 
-    for(l in 1:nl) # level index
-    {
-      LANGEVIN <- langevin(dt=dtl[l],CTMM=CTMM,DIM=DIM)
-      Greenl[l,,] <- LANGEVIN$Green # (K*DIM,K*DIM)
-      Sigmal[l,,] <- LANGEVIN$Sigma # (K*DIM,K*DIM)
-    } # end all time-lag levels
-
-    for(i in 1:n)
-    {
-      Green[i,,] <- Greenl[dti[i],,]
-      Sigma[i,,] <- Sigmal[dti[i],,]
-    }
+    Green[1:n,,] <- LANGEVIN$Green[dti[1:n],,]
+    Sigma[1:n,,] <- LANGEVIN$Sigma[dti[1:n],,]
   }
   else if(dynamics=="change.point")
   {
