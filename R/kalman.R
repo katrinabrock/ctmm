@@ -13,26 +13,29 @@ langevin <- function(dt,CTMM,DIM=1)
   tau <- CTMM$tau
   sigma <- methods::getDataPart(CTMM$sigma)
 
+  n <- length(dt)
+  dtf <- dt<Inf # true dt is finite
+  adtf <- any(dtf)
   if(K<=1) # IID-BM-OU
   {
     # IID limit
-    Green <- array(0,c(1,1))
-    Sigma <- array(1,c(1,1))
+    Green <- array(0,c(n,1,1))
+    Sigma <- array(1,c(n,1,1))
 
     if(K)
     {
       if(tau[1]==Inf) # BM
       {
-        if(dt<Inf) { Green[1,1] <- 1 }
+        Green[dtf,1,1] <- 1
         # absorbing 1/tau into sigma # VAR -> Diffusion
-        Sigma[1,1] <- 2*dt
+        Sigma[,1,1] <- 2*dt
       }
-      else if(dt<Inf) # (BM,OU,IID]
+      else # (BM,OU,IID]
       {
-        dtau <- dt/tau
+        if(adtf) dtau <- dt[dtf]/tau
         c0 <- exp(-dtau)
-        Green[1,1] <- c0
-        Sigma[1,1] <- dexp2(dtau,Exp=c0)
+        Green[dtf,1,1] <- c0
+        Sigma[dtf,1,1] <- dexp2(dtau,Exp=c0)
       }
     } # >IID
   } # IID-BM-OU
@@ -40,8 +43,8 @@ langevin <- function(dt,CTMM,DIM=1)
   {
     Omega2 <- CTMM$Omega2
     #IID limit
-    Green <- rbind( c(0,0) , c(0,0) )
-    Sigma <- rbind( c(1,0) , c(0,Omega2) )
+    Green <- array(0, c(n,2,2))
+    Sigma <- array(rep(c(1,0,0,Omega2), each = n), c(n,2,2) )
 
     f <- CTMM$f.nu[1] # mean(f)
     nu <- CTMM$f.nu[2] # nu || omega
@@ -53,100 +56,121 @@ langevin <- function(dt,CTMM,DIM=1)
       dtau <- dt/tau[2]
       Exp <- exp(-dtau)
       DExp <- dexp1(dtau,Exp) # 1-exp(dt/tau[2])
-
-      if(dt<Inf)
-      {
-        Green[1,1] <- 1
-        Green[1,2] <- tau[2]*DExp
-        Green[2,2] <- Exp
+  
+      if(adtf){
+        Green[dtf,1,1] <- 1
+        Green[dtf,1,2] <- tau[2]*DExp[dtf]
+        Green[dtf,2,2] <- Exp[dtf]
       }
 
       # remember that sigma is D=sigma/tau[1]
       DExp2 <- DExp^2 # (1-exp(-dt/tau[2]))^2
-      Sigma[1,1] <- clamp( 2*dt - tau[2]*(2*DExp+DExp2) ,0,Inf) # does this still underflow?
-      Sigma[2,2] <- dexp2(dtau,Exp)/tau[2]
-      if(dt<Inf) { Sigma[c(2,3)] <- clamp(DExp2,0, sqrt(Sigma[1,1]*Sigma[2,2]) ) } # how does this get so far off?
+      Sigma[,1,1] <- clamp( 2*dt - tau[2]*(2*DExp+DExp2) ,0,Inf) # does this still underflow?
+      Sigma[,2,2] <- dexp2(dtau,Exp)/tau[2]
+
+      # dt<Inf
+      if(adtf){
+        s1221 <- clamp(DExp2[dtf],0, sqrt(Sigma[dtf,1,1]*Sigma[dtf,2,2]) ) # how does this get so far off?
+        Sigma[dtf,2,1] <- s1221
+        Sigma[dtf,1,2] <- s1221
+      }
       # 0 at dt=Inf
     } # END IOU
-    else if(dt<Inf) # (IOU,OUF/OUO,IID]
+    else # (IOU,OUF/OUO,IID]
     {
       # function representation choice
-      nudt <- nu*dt
-      EXP <- (tau[1]>tau[2] && nudt>0.8813736)
-      if(EXP) # exponential functions
-      {
-        dtau <- dt/tau
+      nudt <- nu*dt[dtf]
+      # length(EXP) == sum(dtf)
+      EXP <- (tau[1]>tau[2] & nudt>0.8813736)
+      aEXP <- any(EXP)
+      anEXP <- any(!EXP)
+
+      c012 <- array(0,c(sum(dtf), 3))
+      if(aEXP){
+        # exponential functions
+        n_exp <- sum(EXP)
+        #nxk
+        dtau <- array(dt[dtf][EXP], c(n_exp,K))/array(rep(tau, each = n_exp), c(n_exp,K))
+        #1
         dift <- diff(tau)
+        #nxk
         Exp0 <- exp(-dtau)
+        #nxk
         Exp <- Exp0/dift
-        c0 <- diff(Exp*tau)
-        c1 <- -diff(Exp)
-        c2 <- diff(Exp/tau)
-      }
-      else # trigonometric and hyperbolic-trigonometric functions
-      {
-        Exp <- exp(-fdt)
+        #sum(dtf)
+        c012[EXP,1] <- Exp[,2]*tau[2] - Exp[,1]*tau[1]
+        c012[EXP,2] <- Exp[,1] - Exp[,2] 
+        c012[EXP,3] <- Exp[,2]/tau[2] - Exp[,1]/tau[1]
+      } 
+      if(anEXP){
+        # trigonometric and hyperbolic-trigonometric functions
+        Exp <- exp(-fdt[dtf][!EXP])
 
         if(tau[1]>tau[2]) # hyperbolic-trigonometric
         {
-          Sin0 <- sinh(nudt)
-          Sinc0 <- sinch(nudt,Sin0)
-          Cos0 <- cosh(nudt)
+          Sin0 <- sinh(nudt[!EXP])
+          Sinc0 <- sinch(nudt[!EXP],Sin0)
+          Cos0 <- cosh(nudt[!EXP])
         }
         else # trigonometric
         {
-          Sin0 <- sin(nudt)
-          Sinc0 <- sinc(nudt,Sin0)
-          Cos0 <- cos(nudt)
+          Sin0 <- sin(nudt[!EXP])
+          Sinc0 <- sinc(nudt[!EXP],Sin0)
+          Cos0 <- cos(nudt[!EXP])
         }
+
         SincE <- Sinc0*Exp
         CosE <- Cos0*Exp
 
-        c0 <- CosE + fdt*SincE
-        c1 <- -(Omega2*dt)*SincE
-        c2 <- -Omega2*(CosE - fdt*SincE)
-      } # end function representation
-
-      Green[1,1] <- c0
-      Green[2,1] <- c1
-      Green[1,2] <- -c1/Omega2
-      Green[2,2] <- -c2/Omega2
-
-      # initially canceling terms
-      if(EXP)
-      {
-        dift2 <- dift^2
-        T2 <- tau^2
-        S1 <- dexp2(dtau[1],Exp0[1])
-        S2 <- dexp2(dtau[2],Exp0[2])
-        S12 <- 2*tau[1]*tau[2]*dexp1(fdt,Exp0[1]*Exp0[2])
-        Sigma[1,1] <- (T2[1]*S1 - S12 + T2[2]*S2)/dift2
-        Sigma[2,2] <- (T2[2]*S1 - S12 + T2[1]*S2)/dift2 * Omega2
+        c012[!EXP,1] <- CosE + fdt[dtf][!EXP]*SincE
+        c012[!EXP,2] <- -(Omega2*dt[dtf][!EXP])*SincE
+        c012[!EXP,3] <- -Omega2*(CosE - fdt[dtf][!EXP]*SincE)
       }
-      else
-      {
-        CROSS <- fdt*Sinc0*Exp
-        OUTER <- Cos0^2*dexp2(fdt,Exp) - CROSS^2
+      # end function representation
+
+      Green[dtf,1,1] <- c012[,1]
+      Green[dtf,2,1] <- c012[,2]
+      Green[dtf,1,2] <- -c012[,2]/Omega2
+      Green[dtf,2,2] <- -c012[,3]/Omega2
+
+      ## initially canceling terms
+      if(aEXP){
+        #1
+        dift2 <- dift^2
+        #k
+        T2 <- tau^2
+        #n_exp
+        S1 <- dexp2(dtau[,1],Exp0[,1])
+        S2 <- dexp2(dtau[,2],Exp0[,2])
+        #n_exp
+        S12 <- 2*tau[1]*tau[2]*dexp1(fdt,Exp0[,1]*Exp0[,2])
+        Sigma[dtf,1,1][EXP] <- (T2[1]*S1 - S12 + T2[2]*S2)/dift2
+        Sigma[dtf,2,2][EXP] <- (T2[2]*S1 - S12 + T2[1]*S2)/dift2 * Omega2
+      }
+      if(anEXP){
+        # !EXP
+        CROSS <- fdt[dtf][!EXP]*Sinc0*Exp
+        OUTER <- Cos0^2*dexp2(fdt[dtf][!EXP],Exp) - CROSS^2
         CROSS <- 2*Cos0*Exp*CROSS
         Sin2 <- Sin0^2
 
         if(tau[1]>tau[2])
         {
-          Sigma[1,1] <- OUTER - Sin2 - CROSS
-          Sigma[2,2] <- (OUTER - Sin2 + CROSS) * Omega2
+          Sigma[dtf,1,1][!EXP] <- OUTER - Sin2 - CROSS
+          Sigma[dtf,2,2][!EXP] <- (OUTER - Sin2 + CROSS) * Omega2
         }
         else
         {
-          Sigma[1,1] <- OUTER + Sin2 - CROSS
-          Sigma[2,2] <- (OUTER + Sin2 + CROSS) * Omega2
+          Sigma[dtf,1,1][!EXP] <- OUTER + Sin2 - CROSS
+          Sigma[dtf,2,2][!EXP] <- (OUTER + Sin2 + CROSS) * Omega2
         }
       }
-
       # initially vanishing terms
-      c12 <- c1^2
-      Sigma[1,1] <- Sigma[1,1] - c12/Omega2
-      Sigma[c(2,3)] <- TT*c12
-      Sigma[2,2] <- Sigma[2,2] - c12
+      c12 <- c012[,2]^2
+      Sigma[dtf,1,1] <- Sigma[dtf,1,1] - c12/Omega2
+      Sigma[dtf,1,2] <- TT*c12
+      Sigma[dtf,2,1] <- TT*c12
+      Sigma[dtf,2,2] <- Sigma[dtf,2,2] - c12
     } # end OUF/OUO
   }
 
@@ -159,17 +183,26 @@ langevin <- function(dt,CTMM,DIM=1)
 
     K <- max(1,K)
 
-    Sigma <- outer(Sigma,sigma) # (k,k,d,d)
-    Sigma <- aperm(Sigma,c(1,3,2,4)) # (k,k,d,d) -> (k,d,k,d)
-    dim(Sigma) <- c(K*DIM,K*DIM)
+    # TODO: Replace apply with matrix operations
+    Sigma <- apply(Sigma, 1, function(Sigma) {
+      Sigma <- outer(Sigma,sigma) # (k,k,d,d)
+      Sigma <- aperm(Sigma,c(1,3,2,4)) # (k,k,d,d) -> (k,d,k,d)
+      dim(Sigma) <- c(K*DIM,K*DIM)
+      return(Sigma)
+    })
+    dim(Sigma) <- c(n,K*DIM,K*DIM)
 
     # BM/IOU prior fix
     NAN <- is.nan(Sigma)
     if(any(NAN)) { Sigma[NAN] <- 0 }
 
-    Green <- outer(Green,diag(DIM)) # (k,k,d,d)
-    Green <- aperm(Green,c(1,3,2,4)) # (k,d,k,d)
-    dim(Green) <- c(K*DIM,K*DIM)
+    Green <- apply(Green, 1, function(Green) {
+      Green <- outer(Green,diag(DIM)) # (k,k,d,d)
+      Green <- aperm(Green,c(1,3,2,4)) # (k,d,k,d)
+      dim(Green) <- c(K*DIM,K*DIM)
+      return(Green)
+    })
+    dim(Green) <- c(n,K*DIM,K*DIM)
   }
 
   return(list(Green=Green, Sigma=Sigma))
